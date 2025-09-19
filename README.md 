@@ -1,0 +1,47 @@
+# Lead Scorer Backend
+A backend service to score leads based on product offers using Rule + AI logic.
+
+## Setup Locally
+1. Clone repo: git clone <repo-url>
+2. Create virtualenv: python3 -m venv venv
+3. Activate: source venv/bin/activate
+4. Install dependencies: pip install -r requirements.txt
+5. Run migrations: python manage.py migrate
+6. Start server: python manage.py runserver
+
+
+## Add Offer
+POST /api/offer
+{
+  "name": "AI Outreach Automation",
+  "value_props": ["24/7 outreach", "6x more meetings"],
+  "ideal_use_cases": ["B2B SaaS mid-market"]
+}
+
+## Upload Leads
+POST /api/leads/upload (form-data: file: leads.csv)
+
+## Score Leads
+POST /api/score
+{
+  "offer_id": 1
+}
+
+## Get Results
+GET /api/results/1
+GET /api/results/1?export=csv
+
+
+## Rule Layer (max 50 points)
+- Role relevance: decision maker (+20), influencer (+10), else 0
+- Industry match: exact ICP (+20), adjacent (+10), else 0
+- Data completeness: all fields present (+10)
+
+## AI Layer (max 50 points)
+- Sends lead + offer to AI
+- AI returns High/Medium/Low intent
+- High=50, Medium=30, Low=10
+- Final score = rule_score + ai_points
+
+
+Base URL: https://your-project-name.onrender.com/api/
