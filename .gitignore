@@ -19,3 +19,5 @@ venv/
 # IDEs
 .vscode/
 .idea/
+
+/service_account.json
