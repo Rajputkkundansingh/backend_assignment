@@ -1,4 +1,5 @@
 import csv
+import os
 from django.http import HttpResponse
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -8,7 +9,11 @@ from .serializers import OfferSerializer, LeadSerializer
 import pandas as pd
 from .scoring import calculate_rule_score, calculate_ai_score
 from openai import OpenAIError
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+USE_AI = os.getenv("USE_AI", "True") == "True"
 
 
 # -------------------------
@@ -24,6 +29,7 @@ class OfferView(APIView):
                 status=status.HTTP_201_CREATED,
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 # -------------------------
 # Lead Upload
@@ -56,6 +62,7 @@ class LeadUploadView(APIView):
             status=status.HTTP_201_CREATED,
         )
 
+
 # -------------------------
 # Score Leads
 # -------------------------
@@ -77,11 +84,16 @@ class ScoreLeadsView(APIView):
             # Rule-based scoring
             rule_score, rule_reasoning = calculate_rule_score(lead, offer)
 
-            # AI-based scoring with safe error handling
-            try:
-                ai_points, intent, ai_reasoning = calculate_ai_score(lead, offer)
-            except OpenAIError as e:
-                ai_points, intent, ai_reasoning = 0, "Unknown", f"AI scoring failed: {str(e)}"
+            # AI-based scoring (conditionally)
+            if USE_AI:
+                try:
+                    ai_points, intent, ai_reasoning = calculate_ai_score(lead, offer)
+                except OpenAIError as e:
+                    ai_points, intent, ai_reasoning = 0, "Unknown", f"AI scoring failed: {str(e)}"
+                except Exception as e:
+                    ai_points, intent, ai_reasoning = 0, "Unknown", f"AI scoring failed: {str(e)}"
+            else:
+                ai_points, intent, ai_reasoning = 0, "Unknown", "AI scoring disabled (USE_AI=False)"
 
             final_score = rule_score + ai_points
 
@@ -104,6 +116,7 @@ class ScoreLeadsView(APIView):
             })
 
         return Response(results, status=status.HTTP_200_OK)
+
 
 # -------------------------
 # Get Results
