@@ -1,112 +1,96 @@
-# api/tests/test_scoring.py
-from django.test import TestCase
-from api.models import Lead, Offer
-from api.scoring import calculate_rule_score
+# scoring.py (update)
+import os
+from openai import OpenAI, OpenAIError
 
-class RuleLayerTests(TestCase):
-    def setUp(self):
-        # Create a common offer used by tests
-        self.offer_exact = Offer.objects.create(
-            name="TestOffer Exact",
-            value_props=["vp1"],
-            ideal_use_cases=["SaaS", "Software"]
-        )
-        self.offer_adj = Offer.objects.create(
-            name="TestOffer Adjacent",
-            value_props=["vp1"],
-            ideal_use_cases=["B2B SaaS mid-market"]
-        )
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+USE_AI = os.getenv("USE_AI", "True").lower() in ("1", "true", "yes")
 
-    def test_decision_maker_full_match(self):
-        """Decision maker + industry exact + all fields => 20 + 20 + 10 = 50"""
-        lead = Lead.objects.create(
-            name="John CEO",
-            role="CEO",
-            company="Acme",
-            industry="SaaS",
-            location="USA",
-            linkedin_bio="bio"
-        )
-        score, reasoning = calculate_rule_score(lead, self.offer_exact)
-        self.assertEqual(score, 50)
-        self.assertIn("Role is decision maker (+20)", reasoning)
-        self.assertIn("Industry matches ICP (+20)", reasoning)
-        self.assertIn("All fields present (+10)", reasoning)
+client = None
+if OPENAI_API_KEY:
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+    except Exception:
+        client = None
 
-    def test_influencer_full_match(self):
-        """Influencer + industry exact + all fields => 10 + 20 + 10 = 40"""
-        lead = Lead.objects.create(
-            name="Sara Lead",
-            role="Lead Engineer",
-            company="Acme",
-            industry="Software",
-            location="USA",
-            linkedin_bio="bio"
-        )
-        score, reasoning = calculate_rule_score(lead, self.offer_exact)
-        self.assertEqual(score, 40)
-        self.assertIn("Role is influencer (+10)", reasoning)
-        self.assertIn("Industry matches ICP (+20)", reasoning)
-        self.assertIn("All fields present (+10)", reasoning)
+def simple_ai_stub(lead, offer):
+    """Deterministic fallback: classify based on keywords & role heuristics."""
+    text = " ".join([lead.role, lead.industry, lead.linkedin_bio or ""]).lower()
+    # simple heuristics:
+    if any(k in text for k in ["ceo", "cto", "founder", "head", "director", "vp"]):
+        intent = "High"
+        ai_points = 50
+        reasoning = "Role indicates decision maker; high buying intent based on role keywords."
+    elif any(k in text for k in ["lead", "manager", "principal", "senior", "marketing"]):
+        intent = "Medium"
+        ai_points = 30
+        reasoning = "Role indicates influencer; moderate buying intent."
+    else:
+        intent = "Low"
+        ai_points = 10
+        reasoning = "No decision-making signals found; low buying intent."
+    return ai_points, intent, reasoning
 
-    def test_role_not_relevant_missing_fields(self):
-        """Role not relevant + industry adjacent + missing fields => 0 + 10 + 0 = 10"""
-        lead = Lead.objects.create(
-            name="NoRole",
-            role="Engineer",              # not in decision_makers or influencers
-            company="",                   # missing company -> completeness fails
-            industry="UnknownIndustry",
-            location="",
-            linkedin_bio=""
-        )
-        score, reasoning = calculate_rule_score(lead, self.offer_adj)
-        self.assertEqual(score, 10)
-        self.assertIn("Role not relevant (+0)", reasoning)
-        self.assertIn("Industry adjacent (+10)", reasoning)
-        self.assertIn("Missing some fields (+0)", reasoning)
+def calculate_ai_score(lead, offer):
+    """
+    Attempts to call OpenAI. If not available, or quota fails, falls back to simple_ai_stub.
+    Returns: (ai_points:int, intent:str, ai_reasoning:str)
+    """
+    if not USE_AI or client is None:
+        return simple_ai_stub(lead, offer)
 
-    def test_case_insensitive_industry_match(self):
-        """Industry matching is case-insensitive"""
-        lead = Lead.objects.create(
-            name="Case Test",
-            role="Manager",
-            company="Co",
-            industry="software",  # lower-case
-            location="loc",
-            linkedin_bio="bio"
-        )
-        score, reasoning = calculate_rule_score(lead, self.offer_exact)
-        # Manager => decision maker (+20), industry exact (+20), completeness (+10) = 50
-        self.assertEqual(score, 50)
-        self.assertIn("Industry matches ICP (+20)", reasoning)
+    prompt = f"""
+Lead Details:
+Name: {lead.name}
+Role: {lead.role}
+Company: {lead.company}
+Industry: {lead.industry}
+Location: {lead.location}
+LinkedIn Bio: {lead.linkedin_bio}
 
-    def test_missing_completeness_no_bonus(self):
-        """If any field empty -> completeness not awarded"""
-        lead = Lead.objects.create(
-            name="Partial",
-            role="Manager",
-            company="Acme",
-            industry="SaaS",
-            location="",               # empty -> completeness fails
-            linkedin_bio="bio"
-        )
-        score, reasoning = calculate_rule_score(lead, self.offer_exact)
-        # Manager + industry exact + missing completeness -> 20 + 20 + 0 = 40
-        self.assertEqual(score, 40)
-        self.assertIn("Missing some fields (+0)", reasoning)
+Offer Details:
+Name: {offer.name}
+Value Props: {', '.join(offer.value_props)}
+Ideal Use Cases: {', '.join(offer.ideal_use_cases)}
 
-    def test_influencer_adjacent_industry(self):
-        """Influencer + adjacent industry + all fields => 10 + 10 + 10 = 30"""
-        lead = Lead.objects.create(
-            name="Influencer",
-            role="Marketing Specialist",
-            company="M",
-            industry="SomeOther",   # not in offer_exact list so treated as adjacent
-            location="loc",
-            linkedin_bio="bio"
+Task:
+Classify this lead's buying intent as High, Medium, or Low.
+Give reasoning in 1–2 sentences.
+"""
+
+    try:
+        # current usage in your codebase used client.chat.completions.create
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=150
         )
-        score, reasoning = calculate_rule_score(lead, self.offer_exact)
-        self.assertEqual(score, 30)
-        self.assertIn("Role is influencer (+10)", reasoning)
-        self.assertIn("Industry adjacent (+10)", reasoning)
-        self.assertIn("All fields present (+10)", reasoning)
+        ai_text = response.choices[0].message.content.strip()
+
+        # map AI text to points
+        if "high" in ai_text.lower():
+            return 50, "High", ai_text
+        if "medium" in ai_text.lower():
+            return 30, "Medium", ai_text
+        if "low" in ai_text.lower():
+            return 10, "Low", ai_text
+
+        # fallback mapping if AI didn't reply exactly
+        if any(w in ai_text.lower() for w in ["interested", "ready", "likely"]):
+            return 50, "High", ai_text
+        if any(w in ai_text.lower() for w in ["consider", "could", "maybe"]):
+            return 30, "Medium", ai_text
+
+        # if unknown mapping, return fallback
+        return simple_ai_stub(lead, offer)
+    except OpenAIError as e:
+        # log the error somewhere if you have logging
+        err_str = f"AI scoring failed: {type(e).__name__} - {str(e)}"
+        # return fallback but include error message in reasoning
+        ai_points, intent, reasoning = simple_ai_stub(lead, offer)
+        reasoning = f"{reasoning}; AI scoring failed: {err_str}"
+        return ai_points, intent, reasoning
+    except Exception as e:
+        ai_points, intent, reasoning = simple_ai_stub(lead, offer)
+        reasoning = f"{reasoning}; AI scoring failed: {str(e)}"
+        return ai_points, intent, reasoning
